@@ -1,0 +1,30 @@
+name: import-repository
+
+"on":
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.repository == 'linx29853/soarm101-act'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Expand project archive
+        run: |
+          test -f soarm101-act-repo.tar.gz
+          tar -xzf soarm101-act-repo.tar.gz -C .
+          git rm soarm101-act-repo.tar.gz
+          git rm .github/workflows/import-repository.yml
+      - name: Commit project files
+        run: |
+          git config user.name "linx29853"
+          git config user.email "linx29853@users.noreply.github.com"
+          git add -A
+          git commit -m "Import SO-ARM101 ACT reproduction project"
+          git push origin HEAD:main
