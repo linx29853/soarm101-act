@@ -17,12 +17,18 @@ jobs:
           fetch-depth: 0
       - name: Expand project archive
         run: |
-          test -f soarm101-act-repo.tar.gz
+          if [ ! -f soarm101-act-repo.tar.gz ]; then
+            echo "Project archive has already been imported"
+            exit 0
+          fi
           tar -xzf soarm101-act-repo.tar.gz -C .
+          rm .github/workflows/ci.yml
           git rm soarm101-act-repo.tar.gz
-          git rm .github/workflows/import-repository.yml
       - name: Commit project files
         run: |
+          if [ -f soarm101-act-repo.tar.gz ]; then
+            exit 0
+          fi
           git config user.name "linx29853"
           git config user.email "linx29853@users.noreply.github.com"
           git add -A
