@@ -1,0 +1,37 @@
+# Local assets and course material
+SO-ARM101开源6轴机械臂/
+camera_check/
+*.exe
+*.zip
+*.3mf
+*.3dm
+*.pdf
+*.mp4
+
+# Vendored LeRobot checkout
+src/lerobot/
+
+# Datasets, checkpoints, logs, and generated configs
+data/**
+!data/.gitkeep
+!data/datasets/
+data/datasets/**
+!data/datasets/.gitkeep
+outputs/**
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

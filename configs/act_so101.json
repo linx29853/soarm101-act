@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "task": "Pick up the target object and place it in the target region.",
+  "dataset": {
+    "repo_id": "local/so101_task",
+    "root": "data/datasets/so101_task",
+    "fps": 30
+  },
+  "policy": {
+    "type": "act",
+    "n_obs_steps": 1,
+    "chunk_size": 100,
+    "n_action_steps": 1,
+    "temporal_ensemble_coeff": 0.01,
+    "dim_model": 512,
+    "n_heads": 8,
+    "dim_feedforward": 3200,
+    "n_encoder_layers": 4,
+    "n_decoder_layers": 1,
+    "use_vae": true,
+    "latent_dim": 32,
+    "n_vae_encoder_layers": 4,
+    "dropout": 0.1,
+    "kl_weight": 10.0,
+    "optimizer_lr": 0.00001,
+    "optimizer_lr_backbone": 0.00001,
+    "optimizer_weight_decay": 0.0001,
+    "pretrained_backbone_weights": "ResNet18_Weights.IMAGENET1K_V1",
+    "use_amp": true,
+    "push_to_hub": false
+  },
+  "training": {
+    "output_dir": "outputs/train/act_so101",
+    "job_name": "act_so101",
+    "device": "cuda",
+    "batch_size": 8,
+    "num_workers": 4,
+    "steps": 100000,
+    "log_freq": 100,
+    "save_freq": 10000,
+    "seed": 1000,
+    "wandb": false
+  }
+}

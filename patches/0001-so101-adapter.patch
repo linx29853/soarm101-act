@@ -1,0 +1,695 @@
+diff --git a/src/lerobot/calibrate.py b/src/lerobot/calibrate.py
+index 0aa61a2f..6059822a 100644
+--- a/src/lerobot/calibrate.py
++++ b/src/lerobot/calibrate.py
+@@ -36,6 +36,7 @@ from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraCon
+ from lerobot.robots import (  # noqa: F401
+     Robot,
+     RobotConfig,
++    bi_so101_follower,
+     hope_jr,
+     koch_follower,
+     lekiwi,
+@@ -46,6 +47,7 @@ from lerobot.robots import (  # noqa: F401
+ from lerobot.teleoperators import (  # noqa: F401
+     Teleoperator,
+     TeleoperatorConfig,
++    bi_so101_leader,
+     homunculus,
+     koch_leader,
+     make_teleoperator_from_config,
+diff --git a/src/lerobot/configs/policies.py b/src/lerobot/configs/policies.py
+index f5fa727c..542bac35 100644
+--- a/src/lerobot/configs/policies.py
++++ b/src/lerobot/configs/policies.py
+@@ -12,14 +12,13 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ import abc
+-import builtins
+ import json
+ import logging
+ import os
+ import tempfile
+ from dataclasses import dataclass, field
+ from pathlib import Path
+-from typing import TypeVar
++from typing import Type, TypeVar
+ 
+ import draccus
+ from huggingface_hub import hf_hub_download
+@@ -27,12 +26,12 @@ from huggingface_hub.constants import CONFIG_NAME
+ from huggingface_hub.errors import HfHubHTTPError
+ 
+ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+-from lerobot.constants import ACTION, OBS_STATE
+ from lerobot.optim.optimizers import OptimizerConfig
+ from lerobot.optim.schedulers import LRSchedulerConfig
+ from lerobot.utils.hub import HubMixin
+ from lerobot.utils.utils import auto_select_torch_device, is_amp_available, is_torch_device_available
+ 
++# Generic variable that is either PreTrainedConfig or a subclass thereof
+ T = TypeVar("T", bound="PreTrainedConfig")
+ 
+ 
+@@ -63,6 +62,9 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
+     # automatic gradient scaling is used.
+     use_amp: bool = False
+ 
++    # added by Sachin-2007
++    gradient_accumulation_steps: int = 1
++
+     push_to_hub: bool = True
+     repo_id: str | None = None
+ 
+@@ -120,8 +122,8 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
+ 
+     @property
+     def robot_state_feature(self) -> PolicyFeature | None:
+-        for ft_name, ft in self.input_features.items():
+-            if ft.type is FeatureType.STATE and ft_name == OBS_STATE:
++        for _, ft in self.input_features.items():
++            if ft.type is FeatureType.STATE:
+                 return ft
+         return None
+ 
+@@ -138,8 +140,8 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
+ 
+     @property
+     def action_feature(self) -> PolicyFeature | None:
+-        for ft_name, ft in self.output_features.items():
+-            if ft.type is FeatureType.ACTION and ft_name == ACTION:
++        for _, ft in self.output_features.items():
++            if ft.type is FeatureType.ACTION:
+                 return ft
+         return None
+ 
+@@ -149,17 +151,17 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
+ 
+     @classmethod
+     def from_pretrained(
+-        cls: builtins.type[T],
+-        pretrained_name_or_path: str | Path,
+-        *,
+-        force_download: bool = False,
+-        resume_download: bool = None,
+-        proxies: dict | None = None,
+-        token: str | bool | None = None,
+-        cache_dir: str | Path | None = None,
+-        local_files_only: bool = False,
+-        revision: str | None = None,
+-        **policy_kwargs,
++            cls: Type[T],
++            pretrained_name_or_path: str | Path,
++            *,
++            force_download: bool = False,
++            resume_download: bool = None,
++            proxies: dict | None = None,
++            token: str | bool | None = None,
++            cache_dir: str | Path | None = None,
++            local_files_only: bool = False,
++            revision: str | None = None,
++            **policy_kwargs,
+     ) -> T:
+         model_id = str(pretrained_name_or_path)
+         config_file: str | None = None
+@@ -197,11 +199,16 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):
+             config = json.load(f)
+ 
+         config.pop("type")
+-        with tempfile.NamedTemporaryFile("w+") as f:
++
++        # Create temporary file and ensure it's closed before draccus reads it (Windows fix)
++        with tempfile.NamedTemporaryFile("w+", delete=False) as f:
+             json.dump(config, f)
+-            config_file = f.name
+-            f.flush()
++            temp_config_file = f.name
+ 
++        try:
+             cli_overrides = policy_kwargs.pop("cli_overrides", [])
+             with draccus.config_type("json"):
+-                return draccus.parse(orig_config.__class__, config_file, args=cli_overrides)
++                return draccus.parse(orig_config.__class__, temp_config_file, args=cli_overrides)
++        finally:
++            # Clean up the temporary file
++            os.unlink(temp_config_file)
+\ No newline at end of file
+diff --git a/src/lerobot/motors/motors_bus.py b/src/lerobot/motors/motors_bus.py
+index 97830fc3..bc28b53f 100644
+--- a/src/lerobot/motors/motors_bus.py
++++ b/src/lerobot/motors/motors_bus.py
+@@ -1056,7 +1056,7 @@ class MotorsBus(abc.ABC):
+         motors: str | list[str] | None = None,
+         *,
+         normalize: bool = True,
+-        num_retry: int = 0,
++        num_retry: int = 1,
+     ) -> dict[str, Value]:
+         """Read the same register from several motors at once.
+ 
+@@ -1104,7 +1104,7 @@ class MotorsBus(abc.ABC):
+         length: int,
+         motor_ids: list[int],
+         *,
+-        num_retry: int = 0,
++        num_retry: int = 1,
+         raise_on_error: bool = True,
+         err_msg: str = "",
+     ) -> tuple[dict[int, int], int]:
+@@ -1113,7 +1113,7 @@ class MotorsBus(abc.ABC):
+             comm = self.sync_reader.txRxPacket()
+             if self._is_comm_success(comm):
+                 break
+-            logger.debug(
++            logger.info(
+                 f"Failed to sync read @{addr=} ({length=}) on {motor_ids=} ({n_try=}): "
+                 + self.packet_handler.getTxRxResult(comm)
+             )
+@@ -1151,7 +1151,7 @@ class MotorsBus(abc.ABC):
+         values: Value | dict[str, Value],
+         *,
+         normalize: bool = True,
+-        num_retry: int = 0,
++        num_retry: int = 1,
+     ) -> None:
+         """Write the same register on multiple motors.
+ 
+@@ -1192,7 +1192,7 @@ class MotorsBus(abc.ABC):
+         addr: int,
+         length: int,
+         ids_values: dict[int, int],
+-        num_retry: int = 0,
++        num_retry: int = 1,
+         raise_on_error: bool = True,
+         err_msg: str = "",
+     ) -> int:
+@@ -1201,7 +1201,7 @@ class MotorsBus(abc.ABC):
+             comm = self.sync_writer.txPacket()
+             if self._is_comm_success(comm):
+                 break
+-            logger.debug(
++            logger.info(
+                 f"Failed to sync write @{addr=} ({length=}) with {ids_values=} ({n_try=}): "
+                 + self.packet_handler.getTxRxResult(comm)
+             )
+diff --git a/src/lerobot/record.py b/src/lerobot/record.py
+index 09fa33fe..63e2f022 100644
+--- a/src/lerobot/record.py
++++ b/src/lerobot/record.py
+@@ -80,6 +80,7 @@ from lerobot.robots import (  # noqa: F401
+     Robot,
+     RobotConfig,
+     bi_so100_follower,
++    bi_so101_follower,
+     hope_jr,
+     koch_follower,
+     make_robot_from_config,
+@@ -90,6 +91,7 @@ from lerobot.teleoperators import (  # noqa: F401
+     Teleoperator,
+     TeleoperatorConfig,
+     bi_so100_leader,
++    bi_so101_leader,
+     homunculus,
+     koch_leader,
+     make_teleoperator_from_config,
+diff --git a/src/lerobot/replay.py b/src/lerobot/replay.py
+index 2b62fd67..539c8d7f 100644
+--- a/src/lerobot/replay.py
++++ b/src/lerobot/replay.py
+@@ -52,6 +52,7 @@ from lerobot.robots import (  # noqa: F401
+     Robot,
+     RobotConfig,
+     bi_so100_follower,
++    bi_so101_follower,
+     hope_jr,
+     koch_follower,
+     make_robot_from_config,
+diff --git a/src/lerobot/robots/utils.py b/src/lerobot/robots/utils.py
+index 7486ee49..2b565114 100644
+--- a/src/lerobot/robots/utils.py
++++ b/src/lerobot/robots/utils.py
+@@ -61,6 +61,10 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
+         from .bi_so100_follower import BiSO100Follower
+ 
+         return BiSO100Follower(config)
++    elif config.type == "bi_so101_follower":
++        from .bi_so101_follower import BiSO101Follower
++
++        return BiSO101Follower(config)
+     elif config.type == "mock_robot":
+         from tests.mocks.mock_robot import MockRobot
+ 
+diff --git a/src/lerobot/teleoperate.py b/src/lerobot/teleoperate.py
+index e7be6967..0d24e8b1 100644
+--- a/src/lerobot/teleoperate.py
++++ b/src/lerobot/teleoperate.py
+@@ -65,6 +65,7 @@ from lerobot.robots import (  # noqa: F401
+     Robot,
+     RobotConfig,
+     bi_so100_follower,
++    bi_so101_follower,
+     hope_jr,
+     koch_follower,
+     make_robot_from_config,
+@@ -75,6 +76,7 @@ from lerobot.teleoperators import (  # noqa: F401
+     Teleoperator,
+     TeleoperatorConfig,
+     bi_so100_leader,
++    bi_so101_leader,
+     gamepad,
+     homunculus,
+     koch_leader,
+diff --git a/src/lerobot/teleoperators/utils.py b/src/lerobot/teleoperators/utils.py
+index 344a95d7..a2b96acc 100644
+--- a/src/lerobot/teleoperators/utils.py
++++ b/src/lerobot/teleoperators/utils.py
+@@ -65,5 +65,9 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> Teleoperator:
+         from .bi_so100_leader import BiSO100Leader
+ 
+         return BiSO100Leader(config)
++    elif config.type == "bi_so101_leader":
++        from .bi_so101_leader import BiSO101Leader
++
++        return BiSO101Leader(config)
+     else:
+         raise ValueError(config.type)
+diff --git a/src/lerobot/robots/bi_so101_follower/__init__.py b/src/lerobot/robots/bi_so101_follower/__init__.py
+new file mode 100644
+index 00000000..1f998a85
+--- /dev/null
++++ b/src/lerobot/robots/bi_so101_follower/__init__.py
+@@ -0,0 +1,18 @@
++#!/usr/bin/env python
++
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from .bi_so101_follower import BiSO101Follower
++from .config_bi_so101_follower import BiSO101FollowerConfig
+diff --git a/src/lerobot/robots/bi_so101_follower/bi_so101_follower.py b/src/lerobot/robots/bi_so101_follower/bi_so101_follower.py
+new file mode 100644
+index 00000000..59f0155b
+--- /dev/null
++++ b/src/lerobot/robots/bi_so101_follower/bi_so101_follower.py
+@@ -0,0 +1,162 @@
++#!/usr/bin/env python
++
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import logging
++import time
++from functools import cached_property
++from typing import Any
++
++from lerobot.cameras.utils import make_cameras_from_configs
++from lerobot.robots.so101_follower import SO101Follower
++from lerobot.robots.so101_follower.config_so101_follower import SO101FollowerConfig
++
++from ..robot import Robot
++from .config_bi_so101_follower import BiSO101FollowerConfig
++
++logger = logging.getLogger(__name__)
++
++
++class BiSO101Follower(Robot):
++    """
++    [Bimanual SO-101 Follower Arms](https://github.com/TheRobotStudio/SO-ARM100) designed by TheRobotStudio
++    """
++
++    config_class = BiSO101FollowerConfig
++    name = "bi_so101_follower"
++
++    def __init__(self, config: BiSO101FollowerConfig):
++        super().__init__(config)
++        self.config = config
++
++        left_arm_config = SO101FollowerConfig(
++            id=f"{config.id}_left" if config.id else None,
++            calibration_dir=config.calibration_dir,
++            port=config.left_arm_port,
++            disable_torque_on_disconnect=config.left_arm_disable_torque_on_disconnect,
++            max_relative_target=config.left_arm_max_relative_target,
++            use_degrees=config.left_arm_use_degrees,
++            cameras={},
++        )
++
++        right_arm_config = SO101FollowerConfig(
++            id=f"{config.id}_right" if config.id else None,
++            calibration_dir=config.calibration_dir,
++            port=config.right_arm_port,
++            disable_torque_on_disconnect=config.right_arm_disable_torque_on_disconnect,
++            max_relative_target=config.right_arm_max_relative_target,
++            use_degrees=config.right_arm_use_degrees,
++            cameras={},
++        )
++
++        self.left_arm = SO101Follower(left_arm_config)
++        self.right_arm = SO101Follower(right_arm_config)
++        self.cameras = make_cameras_from_configs(config.cameras)
++
++    @property
++    def _motors_ft(self) -> dict[str, type]:
++        return {f"left_{motor}.pos": float for motor in self.left_arm.bus.motors} | {
++            f"right_{motor}.pos": float for motor in self.right_arm.bus.motors
++        }
++
++    @property
++    def _cameras_ft(self) -> dict[str, tuple]:
++        return {
++            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
++        }
++
++    @cached_property
++    def observation_features(self) -> dict[str, type | tuple]:
++        return {**self._motors_ft, **self._cameras_ft}
++
++    @cached_property
++    def action_features(self) -> dict[str, type]:
++        return self._motors_ft
++
++    @property
++    def is_connected(self) -> bool:
++        return (
++            self.left_arm.bus.is_connected
++            and self.right_arm.bus.is_connected
++            and all(cam.is_connected for cam in self.cameras.values())
++        )
++
++    def connect(self, calibrate: bool = True) -> None:
++        self.left_arm.connect(calibrate)
++        self.right_arm.connect(calibrate)
++
++        for cam in self.cameras.values():
++            cam.connect()
++
++    @property
++    def is_calibrated(self) -> bool:
++        return self.left_arm.is_calibrated and self.right_arm.is_calibrated
++
++    def calibrate(self) -> None:
++        self.left_arm.calibrate()
++        self.right_arm.calibrate()
++
++    def configure(self) -> None:
++        self.left_arm.configure()
++        self.right_arm.configure()
++
++    def setup_motors(self) -> None:
++        self.left_arm.setup_motors()
++        self.right_arm.setup_motors()
++
++    def get_observation(self) -> dict[str, Any]:
++        obs_dict = {}
++
++        # Add "left_" prefix
++        left_obs = self.left_arm.get_observation()
++        obs_dict.update({f"left_{key}": value for key, value in left_obs.items()})
++
++        # Add "right_" prefix
++        right_obs = self.right_arm.get_observation()
++        obs_dict.update({f"right_{key}": value for key, value in right_obs.items()})
++
++        for cam_key, cam in self.cameras.items():
++            start = time.perf_counter()
++            obs_dict[cam_key] = cam.async_read()
++            dt_ms = (time.perf_counter() - start) * 1e3
++            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
++
++        return obs_dict
++
++    def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
++        # Remove "left_" prefix
++        left_action = {
++            key.removeprefix("left_"): value for key, value in action.items() if key.startswith("left_")
++        }
++        # Remove "right_" prefix
++        right_action = {
++            key.removeprefix("right_"): value for key, value in action.items() if key.startswith("right_")
++        }
++
++        send_action_left = self.left_arm.send_action(left_action)
++        send_action_right = self.right_arm.send_action(right_action)
++
++        # Add prefixes back
++        prefixed_send_action_left = {f"left_{key}": value for key, value in send_action_left.items()}
++        prefixed_send_action_right = {f"right_{key}": value for key, value in send_action_right.items()}
++
++        return {**prefixed_send_action_left, **prefixed_send_action_right}
++
++    def disconnect(self):
++        self.left_arm.disconnect()
++        self.right_arm.disconnect()
++
++        for cam in self.cameras.values():
++            cam.disconnect()
+diff --git a/src/lerobot/robots/bi_so101_follower/config_bi_so101_follower.py b/src/lerobot/robots/bi_so101_follower/config_bi_so101_follower.py
+new file mode 100644
+index 00000000..00438b57
+--- /dev/null
++++ b/src/lerobot/robots/bi_so101_follower/config_bi_so101_follower.py
+@@ -0,0 +1,39 @@
++#!/usr/bin/env python
++
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from dataclasses import dataclass, field
++
++from lerobot.cameras import CameraConfig
++
++from ..config import RobotConfig
++
++
++@RobotConfig.register_subclass("bi_so101_follower")
++@dataclass
++class BiSO101FollowerConfig(RobotConfig):
++    left_arm_port: str
++    right_arm_port: str
++
++    # Optional
++    left_arm_disable_torque_on_disconnect: bool = True
++    left_arm_max_relative_target: float | dict[str, float] | None = None
++    left_arm_use_degrees: bool = False
++    right_arm_disable_torque_on_disconnect: bool = True
++    right_arm_max_relative_target: float | dict[str, float] | None = None
++    right_arm_use_degrees: bool = False
++
++    # cameras (shared between both arms)
++    cameras: dict[str, CameraConfig] = field(default_factory=dict)
+diff --git a/src/lerobot/teleoperators/bi_so101_leader/__init__.py b/src/lerobot/teleoperators/bi_so101_leader/__init__.py
+new file mode 100644
+index 00000000..6a6e405e
+--- /dev/null
++++ b/src/lerobot/teleoperators/bi_so101_leader/__init__.py
+@@ -0,0 +1,18 @@
++#!/usr/bin/env python
++
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from .bi_so101_leader import BiSO101Leader
++from .config_bi_so101_leader import BiSO101LeaderConfig
+diff --git a/src/lerobot/teleoperators/bi_so101_leader/bi_so101_leader.py b/src/lerobot/teleoperators/bi_so101_leader/bi_so101_leader.py
+new file mode 100644
+index 00000000..3bacb6c1
+--- /dev/null
++++ b/src/lerobot/teleoperators/bi_so101_leader/bi_so101_leader.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python
++
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import logging
++from functools import cached_property
++
++from lerobot.teleoperators.so101_leader.config_so101_leader import SO101LeaderConfig
++from lerobot.teleoperators.so101_leader.so101_leader import SO101Leader
++
++from ..teleoperator import Teleoperator
++from .config_bi_so101_leader import BiSO101LeaderConfig
++
++logger = logging.getLogger(__name__)
++
++
++class BiSO101Leader(Teleoperator):
++    """
++    [Bimanual SO-101 Leader Arms](https://github.com/TheRobotStudio/SO-ARM100) designed by TheRobotStudio
++    """
++
++    config_class = BiSO101LeaderConfig
++    name = "bi_so101_leader"
++
++    def __init__(self, config: BiSO101LeaderConfig):
++        super().__init__(config)
++        self.config = config
++
++        left_arm_config = SO101LeaderConfig(
++            id=f"{config.id}_left" if config.id else None,
++            calibration_dir=config.calibration_dir,
++            port=config.left_arm_port,
++        )
++
++        right_arm_config = SO101LeaderConfig(
++            id=f"{config.id}_right" if config.id else None,
++            calibration_dir=config.calibration_dir,
++            port=config.right_arm_port,
++        )
++
++        self.left_arm = SO101Leader(left_arm_config)
++        self.right_arm = SO101Leader(right_arm_config)
++
++    @cached_property
++    def action_features(self) -> dict[str, type]:
++        return {f"left_{motor}.pos": float for motor in self.left_arm.bus.motors} | {
++            f"right_{motor}.pos": float for motor in self.right_arm.bus.motors
++        }
++
++    @cached_property
++    def feedback_features(self) -> dict[str, type]:
++        return {}
++
++    @property
++    def is_connected(self) -> bool:
++        return self.left_arm.is_connected and self.right_arm.is_connected
++
++    def connect(self, calibrate: bool = True) -> None:
++        self.left_arm.connect(calibrate)
++        self.right_arm.connect(calibrate)
++
++    @property
++    def is_calibrated(self) -> bool:
++        return self.left_arm.is_calibrated and self.right_arm.is_calibrated
++
++    def calibrate(self) -> None:
++        self.left_arm.calibrate()
++        self.right_arm.calibrate()
++
++    def configure(self) -> None:
++        self.left_arm.configure()
++        self.right_arm.configure()
++
++    def setup_motors(self) -> None:
++        self.left_arm.setup_motors()
++        self.right_arm.setup_motors()
++
++    def get_action(self) -> dict[str, float]:
++        action_dict = {}
++
++        # Add "left_" prefix
++        left_action = self.left_arm.get_action()
++        action_dict.update({f"left_{key}": value for key, value in left_action.items()})
++
++        # Add "right_" prefix
++        right_action = self.right_arm.get_action()
++        action_dict.update({f"right_{key}": value for key, value in right_action.items()})
++
++        return action_dict
++
++    def send_feedback(self, feedback: dict[str, float]) -> None:
++        # Remove "left_" prefix
++        left_feedback = {
++            key.removeprefix("left_"): value for key, value in feedback.items() if key.startswith("left_")
++        }
++        # Remove "right_" prefix
++        right_feedback = {
++            key.removeprefix("right_"): value for key, value in feedback.items() if key.startswith("right_")
++        }
++
++        if left_feedback:
++            self.left_arm.send_feedback(left_feedback)
++        if right_feedback:
++            self.right_arm.send_feedback(right_feedback)
++
++    def disconnect(self) -> None:
++        self.left_arm.disconnect()
++        self.right_arm.disconnect()
+diff --git a/src/lerobot/teleoperators/bi_so101_leader/config_bi_so101_leader.py b/src/lerobot/teleoperators/bi_so101_leader/config_bi_so101_leader.py
+new file mode 100644
+index 00000000..148e3529
+--- /dev/null
++++ b/src/lerobot/teleoperators/bi_so101_leader/config_bi_so101_leader.py
+@@ -0,0 +1,26 @@
++#!/usr/bin/env python
++
++# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from dataclasses import dataclass
++
++from ..config import TeleoperatorConfig
++
++
++@TeleoperatorConfig.register_subclass("bi_so101_leader")
++@dataclass
++class BiSO101LeaderConfig(TeleoperatorConfig):
++    left_arm_port: str
++    right_arm_port: str

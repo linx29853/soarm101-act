@@ -1,0 +1,14 @@
+This project pins and patches Hugging Face LeRobot:
+
+  https://github.com/huggingface/lerobot
+  Commit 882c80d446a63a44868c67ae535467af32ce0e80
+  Copyright 2024 The Hugging Face team
+  Apache License 2.0
+
+The ACT algorithm and reference implementation are described by:
+
+  https://huggingface.co/papers/2304.13705
+  https://github.com/tonyzhaozh/act
+  Copyright 2023 Tony Z. Zhao
+
+The LeRobot checkout retains its own LICENSE and third-party notices.
