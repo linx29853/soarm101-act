@@ -34,6 +34,15 @@ else
   echo "Applied SO-101 adapter patch"
 fi
 
+CAMERA_PATCH="${ROOT_DIR}/patches/0002-opencv-fourcc.patch"
+if git -C "${LEROBOT_DIR}" apply --reverse --check "${CAMERA_PATCH}" >/dev/null 2>&1; then
+  echo "OpenCV FOURCC patch is already applied"
+else
+  git -C "${LEROBOT_DIR}" apply --check "${CAMERA_PATCH}"
+  git -C "${LEROBOT_DIR}" apply "${CAMERA_PATCH}"
+  echo "Applied OpenCV FOURCC patch"
+fi
+
 if [[ "${INSTALL}" == "true" ]]; then
   python3 -m pip install -e "${LEROBOT_DIR}[feetech]" -e "${ROOT_DIR}"
 fi
