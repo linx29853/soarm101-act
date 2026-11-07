@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "task": "Pick up the target object and place it in the target region.",
+  "task": "Pick up the cube and place it into the box.",
   "dataset": {
     "repo_id": "local/so101_task",
     "root": "data/datasets/so101_task",
