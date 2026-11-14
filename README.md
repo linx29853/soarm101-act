@@ -82,6 +82,7 @@
 ![不同执行步数下的换块跳变](docs/results/assets/charts/chunk_discontinuity.png)
 
 跳变为相邻目标在前五个关节上的最大绝对变化，再取中位数。换块处跳变明显大于块内
+</details>
 
 
 ## 复现范围
