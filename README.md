@@ -163,8 +163,7 @@
 ├── patches/
 │   └── 0001-so101-adapter.patch
 ├── scripts/
-│   ├── bootstrap.sh            # 固定 LeRobot 版本并应用适配补丁
-│   └── smoke_act.py            # 合成数据上的 ACT 前向、反向和推理测试
+│   └── bootstrap.sh            # 固定 LeRobot 版本并应用适配补丁
 ├── src/
 │   ├── lerobot/                # 本地上游源码，忽略提交
 │   └── soarm101_act/           # 配置校验和命令构造
@@ -178,7 +177,7 @@
 | LeRobot | `0.3.4` |
 | 上游提交 | `882c80d446a63a44868c67ae535467af32ce0e80` |
 | Python | 3.10 或更高 |
-| 训练设备 | 支持 CUDA 的 NVIDIA GPU；CPU 可运行烟雾测试 |
+| 训练设备 | 支持 CUDA 的 NVIDIA GPU |
 | 数据集格式 | LeRobot `v2.1` |
 | 机器人适配 | `so101_follower`、`so101_leader`，补丁同时包含双 SO-101 支持 |
 

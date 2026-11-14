@@ -152,11 +152,6 @@ def _rollout(args: argparse.Namespace) -> int:
     return subprocess.run(command, env=runtime_environment(), cwd=PROJECT_ROOT, check=False).returncode
 
 
-def _train_smoke(args: argparse.Namespace) -> int:
-    command = python_module_command("scripts.smoke_act", "--config", args.config)
-    return subprocess.run(command, env=runtime_environment(), cwd=PROJECT_ROOT, check=False).returncode
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="soarm101-act")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -197,9 +192,6 @@ def _parser() -> argparse.ArgumentParser:
     rollout.add_argument("--episodes", type=int, default=10)
     rollout.set_defaults(func=_rollout)
 
-    smoke = subparsers.add_parser("train-smoke", help="Run a synthetic ACT train step")
-    smoke.add_argument("--config", default="configs/act_so101.json")
-    smoke.set_defaults(func=_train_smoke)
     return parser
 
 

@@ -148,7 +148,6 @@ python3 -m soarm101_act.cli rollout \
 - [ ] SO-101 适配补丁无冲突
 - [ ] `dataset.root/meta/info.json` 存在
 - [ ] 数据集相机键与采集命令一致
-- [ ] ACT 烟雾测试通过
 - [ ] 有效训练配置已保存
 - [ ] 检查点包含 `config.json`、`model.safetensors` 和 `train_config.json`
 - [ ] 实机评估记录包含 episode 数、成功数和视频路径
