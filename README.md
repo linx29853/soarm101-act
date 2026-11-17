@@ -1,47 +1,86 @@
-# 在 SO-ARM101 上复现 ACT：蓝色方块抓取与放置
+# SO-ARM101 ACT 模仿学习：从遥操作数据采集到真机部署评测
 
-基于 [LeRobot](https://github.com/huggingface/lerobot)，在 SO-ARM101 主从机械臂上完成 Action Chunking Transformer（ACT）的示范采集、模型训练和真机部署。任务为**抓起桌面上的蓝色方块，将其放入纸盒**。
+基于 [LeRobot](https://github.com/huggingface/lerobot) 与 SO-ARM101 主从机械臂，构建蓝色方块抓取入盒任务的模仿学习流程，覆盖双相机遥操作示范采集、数据划分、ACT 训练、检查点验证及真机部署。实验将示范扩充至 **200 条**，完成 **100,000 步训练**，并结合真机视频和离线回放分析执行策略、抓取偏差与动作连续性。
 
-实验从 50 条示范起步，扩充至 200 条，按 episode 划分为 180 条训练、20 条验证，并对比时间集成与固定执行步数，分析抓取偏差、动作连续性和远期动作预测误差。
+![SO-ARM101 自主接近、抓取蓝色方块并放入纸盒](docs/results/assets/video_review/success_pick_place.gif)
 
-## 真机演示与失败对照
+## 全流程总览
 
-### 成功：接近、抓取并放入纸盒
+```mermaid
+flowchart LR
+    A[主从臂校准与双相机配置] --> B[遥操作示范采集]
+    B --> C[数据检查与 episode 划分]
+    C --> D[ACT 训练]
+    D --> E[检查点验证]
+    E --> F[真机部署]
+    F --> G[误差与失败分析]
+```
 
-![SO-ARM101 成功抓取并入盒](docs/results/assets/video_review/success_pick_place.gif)
+| 阶段 | 方法与产物 | 实现或实验依据 |
+|---|---|---|
+| 硬件准备 | 主从臂校准；front + handeye 双视角配置 | [硬件与复现步骤](docs/reproduction.md) |
+| 数据采集 | 遥操作录制图像、状态与动作；支持续录和终端控制 | [采集脚本](scripts/record_cube_50.sh)、[终端按键](scripts/record_with_terminal_keys.py) |
+| 数据整理 | 200 条示范，180 条训练 / 20 条验证 | [episode 划分](configs/blue_cube_200_split.json) |
+| 模型训练 | ACT，batch size 4，训练 100k 步 | [主实验配置](configs/act_blue_cube_180train.json)、[训练日志数据](docs/results/chart_data/training_metrics.csv) |
+| 检查点选择 | 比较五个检查点的完整动作块误差，选择前五关节 MAE 最低的 60k | [验证记录](docs/results/chart_data/validation.jsonl) |
+| 部署评测 | 真机抓放；时间集成与固定执行步数对照 | [视频评阅](docs/results/视频评阅记录.md)、[执行步数记录](docs/results/K执行步数日志对比.md) |
+| 诊断迭代 | 20 条验证示范、9,447 帧离线回放；分析预测偏差与连续性 | [离线诊断](docs/results/200条数据模型离线诊断.md)、[归档指标](docs/results/chart_data/evaluation_summary.json) |
 
+## 项目工程工作
 
-### 位置变化后未能抓起
+- **采集工具：** 50 条示范采集脚本根据已保存 episode 数计算剩余数量，逐条检查数据文件与视频是否存在且非空；终端按键支持进入下一阶段、重录与停止。
+- **硬件与版本适配：** 固定 LeRobot 提交，通过 [SO-101 适配补丁](patches/0001-so101-adapter.patch) 和 [OpenCV FOURCC 补丁](patches/0002-opencv-fourcc.patch) 配置机器人与相机，由 [bootstrap.sh](scripts/bootstrap.sh) 检出并应用。
+- **配置与运行入口：** [配置模块](src/soarm101_act/config.py) 校验 ACT 参数约束并生成训练配置；[CLI](src/soarm101_act/cli.py) 封装环境检查、采集、训练及部署命令。
+- **实验分析：** 保存训练与验证指标、离线策略对照及视频索引，通过 [绘图脚本](scripts/plot_readme_results.py) 从归档数据生成曲线。
 
-![重新摆放后的抓取失败](docs/results/assets/video_review/failure_after_reposition.gif)
+ACT 的动作分块、Transformer 与 CVAE 算法实现基于 LeRobot；任务采用单台 SO-ARM101 从臂，由主臂采集示范。算法来源见 [ACT 论文](https://arxiv.org/abs/2304.13705)。
 
+## 数据采集与整理
 
-<details>
-<summary>查看已有的另外两段成功抓放</summary>
-
-![原有成功片段一](docs/results/assets/200_fixed/pick_place_01.gif)
-
-![原有成功片段二](docs/results/assets/200_fixed/pick_place_02.gif)
-
-
-</details>
-
-五条原录像的筛选说明、人工介入位置与片段索引见[视频评阅记录](docs/results/视频评阅记录.md)。展示片段用于说明可观察行为，未据此计算成功率；位置泛化不足是待验证解释，需固定模型、校准与起始条件后做分区测试。
-
-## 结果概览
-
-| 项目 | 已有结果 |
+| 项目 | 主实验配置 |
 |---|---|
-| 真机执行 | 已保存自主抓取入盒、位置变化后失败及近景抓空片段 |
-| 数据规模 | 200 条示范；180 条训练、20 条验证 |
-| 训练进度 | 完成 100,000 步；已有验证指标最优检查点为 60,000 步 |
-| 位置变化 | 局部位置能够完成任务，其他位置仍有抓取偏差 |
-| 策略对照 | 已记录固定执行步数与时间集成的实机表现及离线指标 |
-| 真机成功率 | 尚未完成统一位置、起始姿态与校准条件下的逐次计分 |
+| 任务 | 接近蓝色方块、抓取、搬运、放入纸盒 |
+| 机器人 | SO-ARM101 leader / follower |
+| 相机 | front 场景相机 + handeye 手眼相机；RGB，640 × 480 |
+| 数据频率 | 30 Hz |
+| 状态与动作 | 6 维关节位置，包含夹爪 |
+| 数据格式与位置 | LeRobot v2.1；本地 `data/datasets/blue_cube_200` |
+| episode 划分 | 180 条训练、20 条验证；seed 1000 |
 
-### 离线回放对照
+实验从 50 条示范起步，随后扩充至 200 条。划分按 episode 进行，验证集包含原始批次 8 条和新增批次 12 条，编号见 [划分文件](configs/blue_cube_200_split.json)。
 
-固定 60,000 步检查点，回放 20 条验证示范，共 9,447 帧。每次输入示范真实关节状态与双相机图像，潜变量取 `z=0`。
+训练时将划分文件的 `train` 编号写入 LeRobot 有效配置的 `dataset.episodes`；验证使用 `validation` 编号。项目的 `train` 封装生成基础配置，主实验划分通过 [复现文档中的配置生成步骤](docs/reproduction.md#主实验200-条示范的训练与部署) 显式写入。诊断记录核对了历史检查点训练编号与划分文件的一致性。
+
+## 模型训练与检查点选择
+
+主实验配置见 [act_blue_cube_180train.json](configs/act_blue_cube_180train.json)。
+
+| 参数 | 值 |
+|---|---|
+| 视觉主干 | ImageNet 预训练 ResNet-18 |
+| 动作块长度 | 100 |
+| Transformer | 隐维 512，8 头；4 层 Encoder / 1 层 Decoder；FFN 3200 |
+| CVAE | 潜变量 32 维，KL 权重 10 |
+| AdamW | 学习率 1e-5，权重衰减 1e-4 |
+| 训练步数 / batch size | 100,000 / 4 |
+| 随机种子 / 保存间隔 | 1000 / 20,000 步 |
+| 默认执行策略 | 每步推理，时间集成系数 0.01 |
+
+![训练损失与检查点验证](docs/results/assets/charts/training_validation.png)
+
+左图展示 1,000 条训练损失记录及 20 点滑动平均。右图比较五个检查点：每条验证示范均匀抽取 10 个观测，推理取 `z=0`，评估完整动作块并排除末尾填充，共 16,784 个有效动作目标。
+
+60k 检查点的前五关节 MAE 为 **6.254**，在五个检查点中最低；夹爪 MAE 为 **5.488**。100k 检查点对应为 6.416 和 5.374。检查点选择采用前五关节 MAE，20 条验证示范同时用于后续离线诊断。指标单位为数据集归一化关节位置，定义与数值见 [验证记录](docs/results/chart_data/validation.jsonl)。
+
+## 真机部署与评测
+
+部署数据流：**双相机 RGB + 当前 6 维关节状态 → ACT 预测 100 步动作块 → 时间集成或动作队列 → 关节位置目标 → 从臂执行 → 下一次观测**。
+
+离线诊断采用原始 `060000/pretrained_model` 检查点。历史真机部署版本为 `act_blue_cube_180train_best60k_gripper1614`，学习权重与原始检查点逐张量一致，六个夹爪归一化统计缓冲区按校准映射调整；模型对应关系见 [诊断记录](docs/results/200条数据模型离线诊断.md)。部署需匹配训练相机键、机器人校准与夹爪统计。
+
+### 离线策略对照
+
+固定原始 60k 检查点，在 20 条验证示范、9,447 帧上回放。每帧输入录制的真实关节状态和双相机图像，潜变量取 `z=0`。MAE 为预测目标相对示范动作的绝对误差，单位为**数据集归一化关节位置**，与网络使用的 z-score 标准化区分。
 
 | 模式 | 前五关节 MAE | 夹爪 MAE | 闭合窗口夹爪 MAE |
 |---|---:|---:|---:|
@@ -49,226 +88,94 @@
 | 时间集成，系数 0.01 | 4.80 | 3.87 | 8.04 |
 | 连续执行 32 步，无融合 | 3.25 | 3.73 | 6.67 |
 
+![离线执行策略误差对比](docs/results/assets/charts/strategy_comparison.png)
 
-## 实验曲线
+闭合窗口按夹爪目标变化规则定位，合计 620 帧。时间集成的全程目标跳变中位数为 0.47，最新一步模式为 0.67；时间集成的闭合窗口夹爪误差更大。上述回放比较预测偏差与连续性，真机任务表现通过视频与逐次执行记录分析。完整指标、预测距离、轨迹和换块跳变图见 [离线诊断](docs/results/200条数据模型离线诊断.md)。
 
-### 训练与检查点验证
+### 真机行为与后续评测
 
-![训练损失与检查点验证](docs/results/assets/charts/training_validation.png)
-
-左图来自 1,000 条训练日志记录，细线为每 100 步记录的平均损失，粗线为 20 个记录点的滑动平均。右图来自五个检查点的验证记录，每条验证示范均匀抽取 10 个观测，评估完整动作块并排除末尾填充。前五关节 MAE 在 60,000 步最低，夹爪 MAE 则在 100,000 步更低。
-
-### 动作块中的预测距离与误差
-
-![动作块预测距离与误差](docs/results/assets/charts/prediction_horizon.png)
-
-固定 60,000 步检查点，在完整验证回放上比较动作块中不同索引的预测误差；超出示范末尾的目标不参与统计。远期预测误差整体高于最新一步，曲线连接已有七个评估索引。
-
-### 执行策略对照
-
-![执行策略误差对比](docs/results/assets/charts/strategy_comparison.png)
-
-20 条验证示范、9,447 帧。闭合窗口按夹爪目标变化规则近似定位。
-
-### 关节目标轨迹
-
-![肩部与夹爪目标轨迹](docs/results/assets/charts/joint_traces.png)
-
-展示验证示范 12 与 99 的肩部抬升和夹爪目标：黑线为示范目标，橙线为时间集成，青线为连续执行 32 步。输入来自录制观测，图中曲线是预测目标，不是机械臂实际跟随轨迹。
+首屏成功片段展示自主接近、抓取、搬运并释放到纸盒中的过程。以下片段展示重新摆放方块后，机械臂接近但未能抓起的过程。
 
 <details>
-<summary>查看换块跳变对照</summary>
+<summary>查看位置变化后的失败及另外两段成功抓放</summary>
 
-![不同执行步数下的换块跳变](docs/results/assets/charts/chunk_discontinuity.png)
+![位置变化后未能抓起](docs/results/assets/video_review/failure_after_reposition.gif)
 
-跳变为相邻目标在前五个关节上的最大绝对变化，再取中位数。换块处跳变明显大于块内
+![成功抓放片段一](docs/results/assets/200_fixed/pick_place_01.gif)
+
+![成功抓放片段二](docs/results/assets/200_fixed/pick_place_02.gif)
+
 </details>
 
+[视频评阅记录](docs/results/视频评阅记录.md) 保存原录像索引、片段时间与人工介入位置；[执行步数记录](docs/results/K执行步数日志对比.md) 保存不同 K 值的运行现象。后续按桌面九宫格、距离与朝向分组，固定检查点、校准与起始姿态，逐次记录成功、失败及人工介入，再汇总真机成功率。
 
-## 复现范围
+## 快速复现与详细文档
 
-算法来自论文 [Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware](https://huggingface.co/papers/2304.13705)。本项目保留动作分块、Transformer 与 CVAE 训练机制，使用单臂抓放任务进行工程复现。
+### 安装与环境检查
 
-| 维度 | ACT 原论文 | 本项目 |
-|---|---|---|
-| 平台 | 双臂 ALOHA | 单台 SO-ARM101 从臂，主臂采集示范 |
-| 视觉 | 多视角观测 | 手眼 `handeye` + 前方 `front` |
-| 任务 | 多种精细双臂操作 | 单臂蓝色方块抓取入盒 |
-| 实现 | ACT 参考代码 | 固定版本 LeRobot + SO-101 适配补丁 |
-| 评估 | 任务完成率 | 真机抓放、预测误差、目标连续性与失败分析 |
-
-## 实验流程
-
-1. 校准主从臂，检查相机与关节映射。
-2. 遥操作采集示范，同步保存双相机图像、关节状态与动作。
-3. 整理 200 条示范，按 episode 划分 180 条训练与 20 条验证。
-4. 训练 ACT，以验证指标比较检查点。
-5. 真机部署并记录视频与动作日志。
-
-## 平台与数据
-
-| 项目 | 配置 |
-|---|---|
-| 机器人 | SO-ARM101 leader / follower |
-| 相机 | `handeye`、`front`，RGB，640 × 480 |
-| 数据集频率 | 30 Hz；实际部署控制频率单独测量 |
-| 状态与动作 | 6 维关节位置，包含夹爪 |
-| 视觉主干 | ImageNet 预训练 ResNet-18 |
-| 数据格式 | LeRobot v2.1 |
-| 数据目录 | `data/datasets/blue_cube_200`，本地保存 |
-
-示范包含接近、抓取、搬运与入盒过程。数据覆盖与录制批次作为独立因素分析；起始姿态和夹爪校准随评估配置记录。
-
-## 训练
-
-180 条训练示范的配置见 [act_blue_cube_180train.json](configs/act_blue_cube_180train.json)，数据划分见 [blue_cube_200_split.json](configs/blue_cube_200_split.json)。
-
-| 参数 | 值 |
-|---|---|
-| 动作块长度 | 100 |
-| 默认时间集成 | 每步推理，系数 0.01 |
-| Transformer | 隐维 512，8 头，4 层 Encoder / 1 层 Decoder，FFN 3200 |
-| CVAE | 潜变量 32 维，KL 权重 10 |
-| AdamW | 学习率 1e-5，权重衰减 1e-4 |
-| 训练步数 / batch size | 100,000 / 4 |
-| 随机种子 / 保存间隔 | 1000 / 20,000 步 |
-
-20 条验证示范参与检查点选择，离线诊断复用了该集合。完整训练终点与用于部署、诊断的 60,000 步检查点分别记录。
-
-## 失败现象与分析
-
-- **位置变化后的抓取偏差：** 局部位置能完成任务，其他位置仍有抓空；后续按桌面九宫格、距离与朝向分组计分。
-- **短执行段下停滞：** 早期 K=15、25 的部分真机运行出现初始位姿反复运动，需统一起始条件、校准和模型后重测。
-- **换块跳变：** 离线 K=32 的换块跳变中位数为 4.86，块内为 0.45，预测目标本身存在不连续。
-- **平滑性与精度：** 时间集成减小目标跳变，但远期预测误差参与融合，闭合窗口夹爪误差增大。
-
-详细记录：[执行步数日志](docs/results/K执行步数日志对比.md)、[200 条数据模型诊断](docs/results/200条数据模型离线诊断.md)、[早期模型留出集验证](docs/results/新模型留出集离线验证.md)。
-
-## 复现入口
-
-完整流程见 [docs/reproduction.md](docs/reproduction.md)。以下保留通用基线的安装、采集、训练与部署命令；200 条示范实验使用上文独立配置、数据划分及对应检查点。
-
-## 仓库结构
-
-```text
-.
-├── configs/
-│   └── act_so101.json          # ACT 超参数、数据路径和训练参数
-├── data/
-│   └── datasets/               # 本地 LeRobot 数据集，不提交到 Git
-├── docs/
-│   ├── reproduction.md         # 数据采集、训练与实机评估流程
-│   └── results/                # 实验记录和结果表
-├── outputs/                    # 日志、检查点和实机评估数据，不提交到 Git
-├── patches/
-│   └── 0001-so101-adapter.patch
-├── scripts/
-│   └── bootstrap.sh            # 固定 LeRobot 版本并应用适配补丁
-├── src/
-│   ├── lerobot/                # 本地上游源码，忽略提交
-│   └── soarm101_act/           # 配置校验和命令构造
-└── tests/                      # 配置与命令单元测试
-```
-
-## 固定版本
-
-| 组件 | 版本或提交 |
-|---|---|
-| LeRobot | `0.3.4` |
-| 上游提交 | `882c80d446a63a44868c67ae535467af32ce0e80` |
-| Python | 3.10 或更高 |
-| 训练设备 | 支持 CUDA 的 NVIDIA GPU |
-| 数据集格式 | LeRobot `v2.1` |
-| 机器人适配 | `so101_follower`、`so101_leader`，补丁同时包含双 SO-101 支持 |
-
-`scripts/bootstrap.sh` 负责检出固定提交并应用 `patches/0001-so101-adapter.patch`。上游源码、数据集、检查点和课程资料均不进入 Git。
-
-## 安装
-
-建议在独立 Python 环境中执行：
+Python ≥ 3.10；训练使用支持 CUDA 的 NVIDIA GPU。LeRobot 固定为 0.3.4，对应提交 `882c80d446a63a44868c67ae535467af32ce0e80`。
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
 bash scripts/bootstrap.sh --install
+python3 -m soarm101_act.cli check --config configs/act_blue_cube_180train.json
 ```
 
-仅准备源码、不安装依赖时执行：
+### 主实验入口
+
+1. 按 [复现文档](docs/reproduction.md) 完成校准与双相机检查，准备本地 `blue_cube_200` 数据集。
+2. 按 [主实验配置生成步骤](docs/reproduction.md#主实验200-条示范的训练与部署) 写入 180 条训练 episode 编号，再执行训练命令。
+3. 检查训练目录中的有效配置、检查点和日志；部署使用明确的 60k 模型路径，并匹配夹爪校准。
 
 ```bash
-bash scripts/bootstrap.sh
+lerobot-train --config_path=outputs/configs/act_blue_cube_180train_train.json
 ```
 
-安装完成后检查环境：
+### 采集与部署命令
 
-```bash
-python3 -m soarm101_act.cli check --config configs/act_so101.json
-```
-
-数据集尚不存在时，`check` 会给出版本、路径和 CUDA 参数的检查结果；完成数据采集后，该命令还会检查 `meta/info.json`。
-
-## 数据采集
-
-串口和相机参数通过命令行或环境变量提供：
+采集命令使用通用基线 `act_so101.json`，部署命令选择主实验配置与 60k 检查点。相机设备路径按本机检查结果替换，双相机键与模型保持一致。
 
 ```bash
 export SOARM_FOLLOWER_PORT=/dev/ttyACM0
 export SOARM_LEADER_PORT=/dev/ttyACM1
-export SOARM_CAMERAS_JSON='{"front":{"type":"opencv","index_or_path":"/dev/video0","width":640,"height":480,"fps":30}}'
+export SOARM_CAMERAS_JSON='{"front":{"type":"opencv","index_or_path":"/dev/video0","width":640,"height":480,"fps":30},"handeye":{"type":"opencv","index_or_path":"/dev/video2","width":640,"height":480,"fps":30}}'
 
 python3 -m soarm101_act.cli record \
   --config configs/act_so101.json \
+  --cameras "$SOARM_CAMERAS_JSON" \
   --episodes 50
-```
 
-采集前需完成主从臂 ID 设置、从臂校准和相机检查。数据默认保存在本地，不自动上传 Hugging Face Hub。详细操作见 [docs/reproduction.md](docs/reproduction.md)。
-
-## 训练
-
-```bash
-python3 -m soarm101_act.cli train \
-  --config configs/act_so101.json \
-  --device cuda \
-  --batch-size 8
-```
-
-命令会生成实际使用的 LeRobot 训练配置：
-
-```text
-outputs/configs/act_so101_train.json
-```
-
-检查点保存在：
-
-```text
-outputs/train/act_so101/checkpoints/
-```
-
-恢复训练时使用 LeRobot 的原始配置入口：
-
-```bash
-lerobot-train \
-  --config_path=outputs/train/act_so101/checkpoints/last/pretrained_model/train_config.json \
-  --resume=true
-```
-
-
-## 实机评估
-
-在机械臂周围预留动作范围，首次运行使用较低的 `max_relative_target`。训练完成后执行：
-
-```bash
-export SOARM_FOLLOWER_PORT=/dev/ttyACM0
-export SOARM_CAMERAS_JSON='{"front":{"type":"opencv","index_or_path":"/dev/video0","width":640,"height":480,"fps":30}}'
-
+# 完成训练并确认模型与当前校准匹配后执行；评估目录使用新路径。
 python3 -m soarm101_act.cli rollout \
-  --config configs/act_so101.json \
-  --policy-path outputs/train/act_so101/checkpoints/last/pretrained_model \
+  --config configs/act_blue_cube_180train.json \
+  --cameras "$SOARM_CAMERAS_JSON" \
+  --policy-path outputs/train/act_blue_cube_180train_100k/checkpoints/060000/pretrained_model \
+  --dataset-root data/datasets/blue_cube_eval_60k \
   --episodes 10
 ```
 
-评估数据默认写入 `data/datasets/so101_eval`。成功率和视频文件记录到 `docs/results/`，并保留对应的有效配置和检查点提交号。
+采集命令使用通用数据集，部署命令使用主实验 60k 检查点。通用基线的 batch size 8、单相机示例及 `last` 检查点流程集中在 [复现文档](docs/reproduction.md)。
+
+### 离线分析与文档导航
+
+```bash
+# 从仓库归档指标重新生成图表；依赖 NumPy、Matplotlib。
+python scripts/plot_readme_results.py
+```
+
+模型离线评估的历史入口、依赖与产物位置见 [诊断报告](docs/results/200条数据模型离线诊断.md#复现与产物)；仓库提供归档指标与绘图脚本，历史评估脚本的收录任务在该节列出。
+
+| 内容 | 入口 |
+|---|---|
+| 硬件准备、主实验训练、通用基线及部署步骤 | [复现流程](docs/reproduction.md) |
+| 训练指标、策略对照与误差诊断 | [200 条数据模型诊断](docs/results/200条数据模型离线诊断.md) |
+| 视频片段、人工介入与行为记录 | [视频评阅](docs/results/视频评阅记录.md) |
+| 预测距离、目标轨迹与换块跳变图 | [详细诊断图表](docs/results/200条数据模型离线诊断.md#诊断图表) |
+| 图表来源与绘图说明 | [图表说明](docs/results/图表说明.md) |
+
+本地数据保存在 `data/datasets/`，训练与评估产物保存在 `outputs/`；数据集、检查点和上游源码通过 `.gitignore` 管理。
 
 ## 许可证
 
